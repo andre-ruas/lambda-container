@@ -1,0 +1,111 @@
+service: ml-container
+frameworkVersion: '2'
+
+provider:
+  name: aws
+  runtime: python3.8
+  lambdaHashingVersion: 20201221
+  timeout: 900
+  region: us-east-1
+
+  environment:
+    S3_BUCKET: ${self:service}-${opt:stage, self:provider.stage}-bucket
+
+  stage: dev
+ 
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "s3:ListBucket"
+        - "s3:PutObject"
+        - "s3:GetObject"
+        - "s3:ListObjects"
+        - "s3:ListObjectsV2"
+        - "s3:PutObjectAcl"
+        - "s3:GetObjectAcl"
+      Resource: 
+        - "arn:aws:s3:::${self:provider.environment.S3_BUCKET}"
+        - "arn:aws:s3:::${self:provider.environment.S3_BUCKET}/*"
+
+    - Effect: "Allow"
+      Action:
+        - "lambda:InvokeFunction"
+      Resource: "*"
+
+  ecr: 
+    images:
+      ml-image:
+        path: ./  
+
+functions:
+  Train:
+    description: Realiza o treinamento do conjunto de dados de entrada.
+    runtime: python3.8 
+    image: 
+      name: ml-image
+      command: train.handler
+      entryPoint: '/lambda-entrypoint.sh'
+
+  Inference:
+    description: Realiza a predição das classes dos dados de entrada.
+    runtime: python3.8
+    image: 
+      name: ml-image
+      command: inference.handler
+      entryPoint: '/lambda-entrypoint.sh'
+    events:
+      - http:
+          path: /inference
+          method: post 
+          cors: true
+
+  SaveData:
+    description: Salva os dados de entrada no S3. 
+    runtime: python3.8
+    image: 
+      name: ml-image
+      command: saveData.handler
+      entryPoint: '/lambda-entrypoint.sh'
+    events:
+      - http:
+          path: /save
+          method: post
+          cors: true
+
+resources:
+  Resources:
+    MLBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.S3_BUCKET}
+        CorsConfiguration:
+          CorsRules:
+            -
+              AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - HEAD
+        NotificationConfiguration:
+          LambdaConfigurations:
+            - Event: s3:ObjectCreated:*
+              Filter:
+                S3Key:
+                  Rules:                    
+                    - Name: suffix
+                      Value: .csv
+              Function: 
+                "Fn::GetAtt": [ TrainLambdaFunction, Arn ]
+
+    S3InvokeLambdaPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        Action: lambda:InvokeFunction
+        FunctionName: !Ref TrainLambdaFunction
+        Principal: s3.amazonaws.com
+        SourceAccount: !Ref AWS::AccountId
+        SourceArn: !Sub arn:aws:s3:::${self:provider.environment.S3_BUCKET}                            
